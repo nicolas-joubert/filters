@@ -23,6 +23,7 @@ class filters extends rcube_plugin{
   private $destfolder = array();
   private $msg_uids = array();
   private $open_mbox;
+  private $rc;
 
 
   function init(){
@@ -57,9 +58,8 @@ class filters extends rcube_plugin{
   }
 
   function filters_checkmsg($mlist){
-	$user = $this->rc->user;
-	$imap = $this->rc->imap;
-	$open_mbox = $imap->get_mailbox_name();
+	$storage = $this->rc->storage;
+	$open_mbox = $storage->get_folder();
 	$this->open_mbox=$open_mbox;
 
 	// does not consider the messages already in the trash
@@ -71,7 +71,7 @@ class filters extends rcube_plugin{
 
 	foreach ($arr_prefs as $key => $saved_filter){
 		// if saved destination folder exists and current folder is INBOX
-		if ($imap->mailbox_exists($saved_filter['destfolder']) && 'INBOX'==$open_mbox){
+		if ($storage->folder_exists($saved_filter['destfolder']) && 'INBOX'==$open_mbox){
 		  $saved_filter['searchstring'] = html_entity_decode($saved_filter['searchstring']);
 		  // if (!isset($saved_filter['filterpriority'])) $saved_filter['filterpriority'] = '';
 		  // destfolder#messages#filterpriority#markread
@@ -97,7 +97,7 @@ class filters extends rcube_plugin{
           $uids[] = $muids;
         }
         if (count($uids)){
-		  $imap->move_message($uids, $dfolder, $open_mbox);
+          $storage->move_message($uids, $dfolder, $open_mbox);
 		  // refresh
       	  $unseen = $this->rc->storage->count($dfolder, 'UNSEEN');
       	  $this->api->output->command('set_unread_count',$dfolder, $unseen);
@@ -147,7 +147,7 @@ class filters extends rcube_plugin{
       else
         $this->rc->output->command('display_message', $this->gettext('unsuccessfullysaved'), 'error');
     }
-    rcmail_overwrite_action('plugin.filters');
+    $this->rc->overwrite_action('plugin.filters');
     $this->rc->output->send('plugin');
   }
 
@@ -169,31 +169,15 @@ class filters extends rcube_plugin{
         $this->rc->output->command('display_message', $this->gettext('unsuccessfullydeleted'), 'error');
     }
 
-    rcmail_overwrite_action('plugin.filters');
+    $this->rc->overwrite_action('plugin.filters');
     $this->rc->output->send('plugin');
   }
 
-
-  // fix for compare strings
-  // исправление для сравнения строк
-  function imap_mime_header_decode_fix($value) {
-    $text='';
-    $elements = imap_mime_header_decode($value);
-    for ($i=0; $i<count($elements); $i++) {
-      if ($elements[$i]->charset != 'default')
-        $elements[$i]->text = iconv ($elements[$i]->charset, "UTF-8", $elements[$i]->text);
-      $text .= $elements[$i]->text;
-    }
-    return $text;
-  }
-
-
   function filters_form(){
-
-    $this->rc->imap_connect();
+    $this->rc->storage_connect();
 
     $table = new html_table(array('cols' => 2));
-    $table->add('title', Q($this->gettext('whatfilter').":"));
+    $table->add('title', rcube_utils::rep_specialchars_output($this->gettext('whatfilter').":", 'html'));
 
     $select = new html_select(array('name' => '_whatfilter', 'id' => 'whatfilter'));
     $select->add($this->gettext('from'), 'from');
@@ -202,16 +186,16 @@ class filters extends rcube_plugin{
     $select->add($this->gettext('subject'), 'subject');
     $table->add('', $select->show($this->gettext('from')));
 
-    $table->add('title', Q($this->gettext('searchstring').":"));
+    $table->add('title', rcube_utils::rep_specialchars_output($this->gettext('searchstring').":"), 'html');
     $inputfield = new html_inputfield(array('name' => '_searchstring', 'id' => 'searchstring'));
     $table->add('', $inputfield->show(""));
 
-    $table->add('title', Q($this->gettext('moveto').":"));
-    $select = rcmail_mailbox_select(array('name' => '_folders', 'id' => 'folders'));
+    $table->add('title', rcube_utils::rep_specialchars_output($this->gettext('moveto').":"));
+    $select = $this->rc->folder_selector(array('name' => '_folders', 'id' => 'folders'));
     $table->add('title',  $select->show());
 
     # new option: all, read and unread messages
-    $table->add('title', Q($this->gettext('messagecount').":"));
+    $table->add('title', rcube_utils::rep_specialchars_output($this->gettext('messagecount').":"), 'html');
     $select = new html_select(array('name' => '_messages', 'id' => 'messages'));
     $select->add($this->gettext('all'), 'all');
     $select->add($this->gettext('unread'), 'unread');
@@ -219,7 +203,7 @@ class filters extends rcube_plugin{
     $table->add('', $select->show($this->gettext('all')));
 
     # new option: markread or markunread messages
-    $table->add('title', Q($this->gettext('markmessages').":"));
+    $table->add('title', rcube_utils::rep_specialchars_output($this->gettext('markmessages').":"), 'html');
     $select = new html_select(array('name' => '_markread', 'id' => 'markread'));
     $select->add($this->gettext('none'), 'none');
     $select->add($this->gettext('markunread'), 'markunread');
@@ -227,7 +211,7 @@ class filters extends rcube_plugin{
     $table->add('', $select->show($this->gettext('none')));
 	
     # new option: filter priority, "on" as enable and "" as disable
-    $table->add('title', Q($this->gettext('filterpriority').":"));
+    $table->add('title', rcube_utils::rep_specialchars_output($this->gettext('filterpriority').":"), 'html');
     $checkbox = new html_checkbox(array('name' => '_checkbox', 'id' => 'checkbox'));
     $table->add('', $checkbox->show("0"));
 
@@ -241,8 +225,7 @@ class filters extends rcube_plugin{
       $flag=true;
       if (empty($saved_filter['markread'])) $saved_filter['markread'] = 'none';
       $folder_id = $saved_filter['destfolder'];
-      $folder_name = rcmail_localize_folderpath($folder_id);
-      $messages = $saved_filter['messages'];
+      $folder_name = $this->rc->localize_folderpath($folder_id);
 
       $msg = $i." - ".$this->gettext('msg_if_field')." <b>".$this->gettext($saved_filter['whatfilter'])."</b> ".$this->gettext('msg_contains').
 	    " <b>".stripslashes($saved_filter['searchstring'])."</b> ".
@@ -259,7 +242,7 @@ class filters extends rcube_plugin{
     }
 
     if (!$flag){
-      $table2->add('title',Q($this->gettext('msg_no_stored_filters')));
+      $table2->add('title',rcube_utils::rep_specialchars_output($this->gettext('msg_no_stored_filters'), 'html'));
     }
 
     $out = html::div(array('class' => 'box'),
@@ -281,7 +264,7 @@ class filters extends rcube_plugin{
         'id' => 'filters-form',
         'name' => 'filters-form',
         'method' => 'post',
-	'class' => 'propform',
+	    'class' => 'propform',
         'action' => './?_task=settings&_action=plugin.filters-save',
     ), $out);
 
@@ -364,7 +347,7 @@ class filters extends rcube_plugin{
     $ret = FALSE;
 
     $ciSearch = $this->caseInsensitiveSearch;
-    $decode_msg	= $this->imap_mime_header_decode_fix($msg);
+    $decode_msg	= rcube_mime::decode_header((string)$msg);
     $stringToSearch=stripslashes($stringToSearch);
 
     if ($ciSearch){
@@ -391,7 +374,7 @@ class filters extends rcube_plugin{
     else{
       if ($this->decodeBase64Msg === TRUE){
         // decode and search BASE64 msg
-        $decode_msg = $this->imap_mime_header_decode_fix(base64_decode($msg));
+        $decode_msg = rcube_mime::decode_header(base64_decode($msg));
         if ($decode_msg !== FALSE){
 
           if ($ciSearch){
@@ -422,7 +405,6 @@ class filters extends rcube_plugin{
 
 
   function filters_addMoveSpamRule(){
-
       $user = $this->rc->user;
 
       $searchstring = $this->spam_subject;
@@ -445,7 +427,7 @@ class filters extends rcube_plugin{
         $new_arr['whatfilter'] = $whatfilter;
         $new_arr['searchstring'] = $searchstring;
         $new_arr['destfolder'] = $destfolder;
-	$new_arr['messages'] = $messages;
+	    $new_arr['messages'] = $messages;
         $arr_prefs = $user->get_prefs();
         $arr_prefs['filters'][] = $new_arr;
         $user->save_prefs($arr_prefs);
